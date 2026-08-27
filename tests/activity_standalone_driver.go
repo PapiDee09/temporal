@@ -46,10 +46,6 @@ func newSAADriver(t *testing.T, env *testcore.TestEnv, cfg activityConfig) *saaD
 	}
 }
 
-func (d *saaDriver) testContext() context.Context {
-	return d.ctx
-}
-
 // saaHandle is a handle to an activity instance.
 type saaHandle struct {
 	activityDriverState
@@ -75,7 +71,7 @@ func (a *saaHandle) driveEvent(t testing.TB, e model.Event) {
 }
 
 func (a *saaHandle) testContext() context.Context {
-	return a.d.testContext()
+	return a.d.ctx
 }
 
 func (a *saaHandle) awaitTimeout(t testing.TB, e model.Event, deadline time.Time) {
@@ -114,7 +110,7 @@ func (a *saaHandle) awaitDispatchDelay(t testing.TB, e model.Event) {
 func (d *saaDriver) start(t require.TestingT, cfg activityConfig) *saaHandle {
 	d.numStarted++
 	id := fmt.Sprintf("%s-%d", d.activityIDPrefix, d.numStarted)
-	resp, err := d.env.FrontendClient().StartActivityExecution(d.testContext(), d.startRequest(cfg, id, id))
+	resp, err := d.env.FrontendClient().StartActivityExecution(d.ctx, d.startRequest(cfg, id, id))
 	require.NoError(t, err)
 	return &saaHandle{
 		activityDriverState: activityDriverState{cfg: cfg},

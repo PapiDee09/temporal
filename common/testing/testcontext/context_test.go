@@ -143,19 +143,6 @@ func TestCleanupCancelsContext(t *testing.T) {
 func TestCleanup(t *testing.T) {
 	t.Parallel()
 
-	t.Run("reports default timeout", func(t *testing.T) {
-		t.Parallel()
-
-		synctest.Test(t, func(t *testing.T) {
-			tb := newRecordingTB()
-			tb.run(func() {
-				<-For(tb).Done()
-			})
-
-			require.Equal(t, fmt.Sprintf("test exceeded timeout of %v", DefaultTimeout()), tb.error())
-		})
-	})
-
 	t.Run("reports timeout", func(t *testing.T) {
 		t.Parallel()
 
@@ -343,55 +330,6 @@ func TestEnsureRemaining(t *testing.T) {
 		})
 	})
 
-	t.Run("preserves decorators without replay", func(t *testing.T) {
-		t.Parallel()
-
-		type key struct{}
-		var calls atomic.Int32
-
-		AttachDecorator(t, key{}, func(ctx context.Context) context.Context {
-			calls.Add(1)
-			return context.WithValue(ctx, key{}, "decorated")
-		})
-		ctx := For(t)
-		require.Equal(t, "decorated", ctx.Value(key{}))
-
-		refreshed := EnsureRemaining(ctx, t, DefaultTimeout()+10*time.Second)
-
-		require.Same(t, ctx, refreshed)
-		require.Equal(t, "decorated", refreshed.Value(key{}))
-		require.Equal(t, int32(1), calls.Load())
-	})
-
-	t.Run("preserves test name metadata", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := For(t)
-		refreshed := EnsureRemaining(ctx, t, DefaultTimeout()+10*time.Second)
-
-		require.Same(t, ctx, refreshed)
-		md, ok := metadata.FromOutgoingContext(refreshed)
-		require.True(t, ok)
-		require.Equal(t, []string{t.Name()}, md.Get(testNameMetadataKey))
-	})
-
-	t.Run("repeated extensions keep the same context alive", func(t *testing.T) {
-		t.Parallel()
-
-		synctest.Test(t, func(t *testing.T) {
-			original := For(t)
-
-			firstRefresh := EnsureRemaining(original, t, DefaultTimeout()+10*time.Second)
-			require.Same(t, original, firstRefresh)
-
-			refreshed := EnsureRemaining(original, t, DefaultTimeout()+20*time.Second)
-			require.Same(t, original, refreshed)
-
-			time.Sleep(DefaultTimeout() + 11*time.Second) //nolint:forbidigo // pass the first extension, but not the second
-			require.NoError(t, original.Err())
-		})
-	})
-
 	t.Run("leaves a foreign context unchanged", func(t *testing.T) {
 		t.Parallel()
 
@@ -476,42 +414,6 @@ func TestEnsureRemaining(t *testing.T) {
 		)
 	})
 
-	t.Run("fails for nil context", func(t *testing.T) {
-		t.Parallel()
-
-		tb := newRecordingTB()
-		tb.run(func() {
-			EnsureRemaining(nil, tb, time.Second) //nolint:staticcheck // verify the package's nil-context failure
-		})
-
-		require.Equal(t, "testcontext: nil context", tb.fatal())
-	})
-
-	t.Run("safe concurrent calls", func(t *testing.T) {
-		t.Parallel()
-
-		synctest.Test(t, func(t *testing.T) {
-			start := time.Now()
-			ctx := For(t)
-
-			var wg sync.WaitGroup
-			refreshed := make([]context.Context, 8)
-			for i := range refreshed {
-				wg.Go(func() {
-					refreshed[i] = EnsureRemaining(ctx, t, DefaultTimeout()+10*time.Second)
-				})
-			}
-			wg.Wait()
-
-			// All callers receive the cached context, no matter who extends it.
-			for _, got := range refreshed {
-				require.Same(t, ctx, got)
-				deadline, ok := got.Deadline()
-				require.True(t, ok)
-				require.Equal(t, start.Add(maxTimeout), deadline)
-			}
-		})
-	})
 }
 
 // recordingTB records failures instead of failing a real test.

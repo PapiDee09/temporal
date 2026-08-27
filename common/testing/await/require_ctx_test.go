@@ -134,7 +134,7 @@ func TestRequire_ExtendsCachedTestContextPastActiveExpiration(t *testing.T) {
 			if time.Now().Before(completeAt) {
 				t.Error("not ready")
 			}
-		}, testcontext.DefaultTimeout()+5*time.Second, time.Second)
+		}, testcontext.DefaultTimeout()+5*time.Second, testcontext.DefaultTimeout()+time.Second)
 
 		require.Same(t, ctx, testcontext.For(t))
 		require.NoError(t, ctx.Err())

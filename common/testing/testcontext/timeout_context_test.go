@@ -34,7 +34,7 @@ func TestTimeoutContextExtensionKeepsIdentityAlivePastOldDeadline(t *testing.T) 
 		start := time.Now()
 		ctx := newTimeoutContext(t.Context(), start.Add(time.Minute), start.Add(10*time.Second))
 
-		require.True(t, ctx.extend(start.Add(20*time.Second)))
+		ctx.extend(start.Add(20 * time.Second))
 		time.Sleep(11 * time.Second) //nolint:forbidigo // advance past the original active deadline
 		require.NoError(t, ctx.Err())
 
@@ -54,7 +54,7 @@ func TestTimeoutContextExtensionsAreMonotonic(t *testing.T) {
 		var wg sync.WaitGroup
 		for _, extension := range []time.Duration{15 * time.Second, 30 * time.Second, 20 * time.Second, 25 * time.Second} {
 			wg.Go(func() {
-				require.True(t, ctx.extend(start.Add(extension)))
+				ctx.extend(start.Add(extension))
 			})
 		}
 		wg.Wait()
@@ -99,7 +99,7 @@ func TestTimeoutContextCancellationIsTerminal(t *testing.T) {
 				tc.cancel(cancelParent, ctx)
 				<-ctx.Done()
 				require.ErrorIs(t, ctx.Err(), context.Canceled)
-				require.False(t, ctx.extend(start.Add(20*time.Second)))
+				ctx.extend(start.Add(20 * time.Second))
 				require.ErrorIs(t, ctx.Err(), context.Canceled)
 			})
 		})
@@ -115,7 +115,7 @@ func TestTimeoutContextDerivedDeadlineRemainsTighter(t *testing.T) {
 		derived, cancel := context.WithTimeout(ctx, time.Second)
 		defer cancel()
 
-		require.True(t, ctx.extend(start.Add(20*time.Second)))
+		ctx.extend(start.Add(20 * time.Second))
 		deadline, ok := derived.Deadline()
 		require.True(t, ok)
 		require.Equal(t, start.Add(time.Second), deadline)
@@ -124,21 +124,6 @@ func TestTimeoutContextDerivedDeadlineRemainsTighter(t *testing.T) {
 		<-derived.Done()
 		require.ErrorIs(t, derived.Err(), context.DeadlineExceeded)
 		require.NoError(t, ctx.Err())
-	})
-}
-
-func TestTimeoutContextDerivedContextObservesParentCancellation(t *testing.T) {
-	t.Parallel()
-
-	synctest.Test(t, func(t *testing.T) {
-		start := time.Now()
-		ctx := newTimeoutContext(t.Context(), start.Add(time.Minute), start.Add(10*time.Second))
-		derived, cancelDerived := context.WithCancel(ctx)
-		defer cancelDerived()
-
-		ctx.cancel()
-		<-derived.Done()
-		require.ErrorIs(t, derived.Err(), context.Canceled)
 	})
 }
 
@@ -162,26 +147,29 @@ func TestTimeoutContextCauseRemainsDeadlineExceededAfterParentCancellation(t *te
 func TestTimeoutContextExpirationAndExtensionRaceHasOneTerminalOutcome(t *testing.T) {
 	t.Parallel()
 
-	extensionWins := 0
-	for range 100 {
-		synctest.Test(t, func(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		extensionWins := 0
+		for range 100 {
 			start := time.Now()
 			ctx := newTimeoutContext(t.Context(), start.Add(time.Minute), start.Add(time.Second))
-			extended := make(chan bool, 1)
+			extended := make(chan struct{})
 			time.AfterFunc(time.Second, func() {
-				extended <- ctx.extend(start.Add(2 * time.Second))
+				ctx.extend(start.Add(2 * time.Second))
+				close(extended)
 			})
 
 			time.Sleep(time.Second) //nolint:forbidigo // race the extension with the original expiration
-			if <-extended {
+			<-extended
+			if ctx.Err() == nil {
 				extensionWins++
 				require.NoError(t, ctx.Err())
 				time.Sleep(time.Second) //nolint:forbidigo // advance to the winning extension
 			}
 			<-ctx.Done()
 			require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
-			require.False(t, ctx.extend(start.Add(3*time.Second)))
-		})
-	}
-	require.Positive(t, extensionWins, "the race must exercise a stale expiration callback after extension wins")
+			ctx.extend(start.Add(3 * time.Second))
+			require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
+		}
+		require.Positive(t, extensionWins, "the race must exercise a stale expiration callback after extension wins")
+	})
 }

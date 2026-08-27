@@ -7,7 +7,7 @@ import (
 )
 
 type timeoutContext struct {
-	parent  context.Context
+	context.Context
 	ceiling time.Time
 	done    chan struct{}
 
@@ -23,7 +23,7 @@ func newTimeoutContext(parent context.Context, ceiling, activeExpiration time.Ti
 		activeExpiration = ceiling
 	}
 	ctx := &timeoutContext{
-		parent:           context.WithoutCancel(parent),
+		Context:          context.WithoutCancel(parent),
 		ceiling:          ceiling,
 		done:             make(chan struct{}),
 		activeExpiration: activeExpiration,
@@ -52,27 +52,22 @@ func (c *timeoutContext) Err() error {
 	return c.err
 }
 
-func (c *timeoutContext) Value(key any) any {
-	return c.parent.Value(key)
-}
-
-func (c *timeoutContext) extend(expiration time.Time) bool {
+func (c *timeoutContext) extend(expiration time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.err != nil {
-		return false
+		return
 	}
 	if c.ceiling.Before(expiration) {
 		expiration = c.ceiling
 	}
 	if !expiration.After(c.activeExpiration) {
-		return true
+		return
 	}
 
 	c.activeExpiration = expiration
 	c.timer.Reset(time.Until(expiration))
-	return true
 }
 
 func (c *timeoutContext) effectiveExpiration() time.Time {

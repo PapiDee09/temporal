@@ -314,9 +314,12 @@ func NewEnv(t *testing.T, opts ...TestOption) *TestEnv {
 	}
 
 	// Attach version headers decorator to the test context.
+	testcontext.AttachDecorator(t, versionHeadersContextKey{}, headers.SetVersions)
+	ctx = testcontext.For(t)
+
 	// Restore as much of the test's timeout budget as the context's ceiling
 	// allows, now that setup is done.
-	ctx = finalizeTestContext(t)
+	testcontext.EnsureRemaining(ctx, t, testcontext.DefaultTimeout())
 
 	env := &TestEnv{
 		FunctionalTestBase: base,
@@ -360,12 +363,6 @@ func NewEnv(t *testing.T, opts ...TestOption) *TestEnv {
 	}
 
 	return env
-}
-
-func finalizeTestContext(t *testing.T) context.Context {
-	testcontext.AttachDecorator(t, versionHeadersContextKey{}, headers.SetVersions)
-	ctx := testcontext.For(t)
-	return testcontext.EnsureRemaining(ctx, t, testcontext.DefaultTimeout())
 }
 
 // Use test env-specific namespace here for test isolation.

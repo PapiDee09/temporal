@@ -45,10 +45,6 @@ func newWFADriver(t *testing.T, env *testcore.TestEnv, cfg activityConfig) *wfaD
 	return &wfaDriver{env: env, ctx: testcontext.For(t), cfg: cfg}
 }
 
-func (d *wfaDriver) testContext() context.Context {
-	return d.ctx
-}
-
 // wfaHandle is a handle to a workflow-scheduled activity.
 type wfaHandle struct {
 	activityDriverState
@@ -76,7 +72,7 @@ func (a *wfaHandle) driveEvent(t testing.TB, e model.Event) {
 }
 
 func (a *wfaHandle) testContext() context.Context {
-	return a.d.testContext()
+	return a.d.ctx
 }
 
 func (a *wfaHandle) awaitTimeout(t testing.TB, e model.Event, deadline time.Time) {
@@ -127,7 +123,7 @@ func (d *wfaDriver) start(t *testing.T, cfg activityConfig) *wfaHandle {
 	t.Cleanup(w.Stop)
 
 	wfID := testcore.RandomizeStr("wfa-run")
-	run, err := d.env.SdkClient().ExecuteWorkflow(d.testContext(),
+	run, err := d.env.SdkClient().ExecuteWorkflow(d.ctx,
 		sdkclient.StartWorkflowOptions{ID: wfID, TaskQueue: wfTQ},
 		wfaSingleActivityWorkflow, wfaActivityParams{Cfg: cfg, ActivityTQ: actTQ, ActivityID: actID})
 	require.NoError(t, err)
@@ -141,7 +137,7 @@ func (d *wfaDriver) start(t *testing.T, cfg activityConfig) *wfaHandle {
 		taskQueue:           actTQ,
 	}
 	// The workflow schedules the activity, so it does not exist yet when ExecuteWorkflow returns.
-	await.Require(d.testContext(), t, func(t *await.T) {
+	await.Require(d.ctx, t, func(t *await.T) {
 		_, activityInProgress := a.activityInfoIfInProgress(t)
 		t.Require().True(activityInProgress, "the workflow has not scheduled its activity")
 	}, activityDriverTimeout, activityDriverPollInterval)
