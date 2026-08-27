@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+// timeoutContext has an active expiration that can be extended up to the fixed
+// ceiling reported by Deadline without changing the context's identity.
 type timeoutContext struct {
 	context.Context
 	ceiling time.Time
@@ -29,11 +31,11 @@ func newTimeoutContext(parent context.Context, ceiling, activeExpiration time.Ti
 		activeExpiration: activeExpiration,
 	}
 
+	// Either callback may run immediately, and finishLocked needs both handles
+	// initialized. Hold the lock until both are installed.
 	ctx.mu.Lock()
 	ctx.timer = time.AfterFunc(time.Until(activeExpiration), ctx.expire)
-	ctx.stopParentCallback = context.AfterFunc(parent, func() {
-		ctx.cancel()
-	})
+	ctx.stopParentCallback = context.AfterFunc(parent, ctx.cancel)
 	ctx.mu.Unlock()
 	return ctx
 }

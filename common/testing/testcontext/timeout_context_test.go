@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestTimeoutContextReportsCeilingAndExpiresAtActiveDeadline(t *testing.T) {
+func TestTimeoutContextReportsCeilingAndExpiresAtActiveExpiration(t *testing.T) {
 	t.Parallel()
 
 	synctest.Test(t, func(t *testing.T) {
@@ -112,15 +112,15 @@ func TestTimeoutContextDerivedDeadlineRemainsTighter(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Now()
 		ctx := newTimeoutContext(t.Context(), start.Add(time.Minute), start.Add(10*time.Second))
-		derived, cancel := context.WithTimeout(ctx, time.Second)
+		derived, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 
-		ctx.extend(start.Add(20 * time.Second))
+		ctx.extend(start.Add(30 * time.Second))
 		deadline, ok := derived.Deadline()
 		require.True(t, ok)
-		require.Equal(t, start.Add(time.Second), deadline)
+		require.Equal(t, start.Add(20*time.Second), deadline)
 
-		time.Sleep(time.Second) //nolint:forbidigo // advance to the derived deadline
+		time.Sleep(20 * time.Second) //nolint:forbidigo // advance past the original active expiration to the derived deadline
 		<-derived.Done()
 		require.ErrorIs(t, derived.Err(), context.DeadlineExceeded)
 		require.NoError(t, ctx.Err())
@@ -162,7 +162,6 @@ func TestTimeoutContextExpirationAndExtensionRaceHasOneTerminalOutcome(t *testin
 			<-extended
 			if ctx.Err() == nil {
 				extensionWins++
-				require.NoError(t, ctx.Err())
 				time.Sleep(time.Second) //nolint:forbidigo // advance to the winning extension
 			}
 			<-ctx.Done()

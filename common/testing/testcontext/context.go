@@ -3,6 +3,7 @@ package testcontext
 import (
 	"context"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -84,8 +85,8 @@ func DefaultTimeout() time.Duration {
 //
 // After decorators are attached, the result may be cached: [EnsureRemaining]
 // extends its active timeout without changing the context or its reported
-// deadline. Deadline reports the extension ceiling, so Done may close earlier
-// if the active timeout is not extended.
+// deadline. Deadline reports the latest possible expiration. Done closes at
+// the current active expiration, initially the configured timeout.
 func For(tb testing.TB, opts ...Option) context.Context {
 	tb.Helper()
 
@@ -137,10 +138,8 @@ func AttachDecorator[K comparable](tb testing.TB, key K, decorator func(context.
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
-	for _, existingKey := range st.decoratorKeys {
-		if existingKey == key {
-			return
-		}
+	if slices.Contains(st.decoratorKeys, any(key)) {
+		return
 	}
 	st.current = decorator(st.current)
 	st.decoratorKeys = append(st.decoratorKeys, key)
@@ -218,7 +217,7 @@ func newContextState(tb testing.TB, timeout time.Duration, explicitTimeout bool)
 		timeout:   timeout,
 	}
 	st.timeoutContext = newTimeoutContext(tb.Context(), ceiling, createdAt.Add(timeout))
-	ctx := context.WithValue(context.Context(st.timeoutContext), ownerKey{}, st)
+	ctx := context.WithValue(st.timeoutContext, ownerKey{}, st)
 
 	// Annotate gRPC requests with the test name for OTEL tracing.
 	st.current = metadata.AppendToOutgoingContext(ctx, testNameMetadataKey, tb.Name())
@@ -261,9 +260,6 @@ func getOrCreateContextState(tb testing.TB, cfg config) *contextState {
 // cleanup cancels the test context and reports whether its active timeout had
 // already fired, and how long after createdAt that was.
 func (s *contextState) cleanup() (timedOut bool, timeout time.Duration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	s.timeoutContext.cancel()
 	err := s.timeoutContext.Err()
 	effectiveExpiration := s.timeoutContext.effectiveExpiration()

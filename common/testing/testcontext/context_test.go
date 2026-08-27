@@ -76,25 +76,6 @@ func TestContextDecorators(t *testing.T) {
 		require.Equal(t, int32(1), calls.Load(), "decorator should only be applied once")
 	})
 
-	t.Run("applied once for same key", func(t *testing.T) {
-		t.Parallel()
-
-		type key struct{}
-
-		var calls atomic.Int32
-		decorator := func(ctx context.Context) context.Context {
-			calls.Add(1)
-			return context.WithValue(ctx, key{}, "decorated")
-		}
-
-		AttachDecorator(t, key{}, decorator)
-		AttachDecorator(t, key{}, decorator)
-		ctx := For(t)
-
-		require.Equal(t, "decorated", ctx.Value(key{}))
-		require.Equal(t, int32(1), calls.Load(), "decorator should only be applied once")
-	})
-
 	t.Run("multiple decorators", func(t *testing.T) {
 		t.Parallel()
 
@@ -178,18 +159,6 @@ func TestCleanup(t *testing.T) {
 }
 
 func TestEnvTimeout(t *testing.T) {
-	t.Run("from env", func(t *testing.T) {
-		t.Setenv("TEMPORAL_TEST_TIMEOUT", "10s")
-
-		synctest.Test(t, func(t *testing.T) {
-			start := time.Now()
-			ctx := For(t)
-			deadline, ok := ctx.Deadline()
-			require.True(t, ok)
-			require.Equal(t, start.Add(maxTimeout), deadline)
-		})
-	})
-
 	t.Run("custom overrides env", func(t *testing.T) {
 		t.Setenv("TEMPORAL_TEST_TIMEOUT", "10s")
 
@@ -219,20 +188,15 @@ func TestEnvTimeout(t *testing.T) {
 		t.Setenv("TEMPORAL_TEST_TIMEOUT", "10s")
 
 		synctest.Test(t, func(t *testing.T) {
-			start := time.Now()
 			ctx := For(t)
-			originalDeadline, ok := ctx.Deadline()
-			require.True(t, ok)
-			require.Equal(t, start.Add(maxTimeout), originalDeadline)
 
 			// TEMPORAL_TEST_TIMEOUT only raises the baseline; it must not pin
 			// a hard ceiling the way WithTimeout does.
-			refreshed := EnsureRemaining(ctx, t, time.Minute)
+			got := EnsureRemaining(ctx, t, time.Minute)
 
-			refreshedDeadline, ok := refreshed.Deadline()
-			require.True(t, ok)
-			require.Equal(t, originalDeadline, refreshedDeadline)
-			require.Same(t, ctx, refreshed)
+			require.Same(t, ctx, got)
+			time.Sleep(11 * time.Second) //nolint:forbidigo // advance past the environment timeout
+			require.NoError(t, ctx.Err())
 		})
 	})
 }
@@ -246,16 +210,16 @@ func TestEnsureRemaining(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			start := time.Now()
 			ctx := For(t)
-			originalDeadline, ok := ctx.Deadline()
+			ceiling, ok := ctx.Deadline()
 			require.True(t, ok)
-			require.Equal(t, start.Add(maxTimeout), originalDeadline)
+			require.Equal(t, start.Add(maxTimeout), ceiling)
 
-			refreshed := EnsureRemaining(ctx, t, DefaultTimeout()+10*time.Second)
+			got := EnsureRemaining(ctx, t, DefaultTimeout()+10*time.Second)
 
-			refreshedDeadline, ok := refreshed.Deadline()
+			deadline, ok := got.Deadline()
 			require.True(t, ok)
-			require.Equal(t, originalDeadline, refreshedDeadline)
-			require.Same(t, ctx, refreshed)
+			require.Equal(t, ceiling, deadline)
+			require.Same(t, ctx, got)
 
 			time.Sleep(DefaultTimeout() + time.Second) //nolint:forbidigo // advance past the original active expiration
 			require.NoError(t, ctx.Err())
@@ -270,16 +234,16 @@ func TestEnsureRemaining(t *testing.T) {
 			tb := newRecordingTB()
 			tb.run(func() {
 				ctx := For(tb)
-				originalDeadline, ok := ctx.Deadline()
+				ceiling, ok := ctx.Deadline()
 				require.True(t, ok)
-				require.Equal(t, start.Add(maxTimeout), originalDeadline)
+				require.Equal(t, start.Add(maxTimeout), ceiling)
 
-				refreshed := EnsureRemaining(ctx, tb, 10*time.Minute)
+				got := EnsureRemaining(ctx, tb, 10*time.Minute)
 
-				refreshedDeadline, ok := refreshed.Deadline()
+				deadline, ok := got.Deadline()
 				require.True(t, ok)
-				require.Equal(t, start.Add(maxTimeout), refreshedDeadline)
-				require.Same(t, ctx, refreshed)
+				require.Equal(t, ceiling, deadline)
+				require.Same(t, ctx, got)
 				<-ctx.Done()
 			})
 
@@ -294,12 +258,12 @@ func TestEnsureRemaining(t *testing.T) {
 			start := time.Now()
 			ctx := For(t, WithTimeout(100*time.Millisecond))
 
-			refreshed := EnsureRemaining(ctx, t, 10*time.Minute)
+			got := EnsureRemaining(ctx, t, 10*time.Minute)
 
-			refreshedDeadline, ok := refreshed.Deadline()
+			deadline, ok := got.Deadline()
 			require.True(t, ok)
-			require.Equal(t, start.Add(100*time.Millisecond), refreshedDeadline)
-			require.Same(t, ctx, refreshed, "context should not have been replaced")
+			require.Equal(t, start.Add(100*time.Millisecond), deadline)
+			require.Same(t, ctx, got, "context should not have been replaced")
 		})
 	})
 
@@ -315,18 +279,12 @@ func TestEnsureRemaining(t *testing.T) {
 			derived, cancel := context.WithTimeout(ctx, time.Second)
 			defer cancel()
 
-			refreshed := EnsureRemaining(derived, t, DefaultTimeout()+10*time.Second)
+			got := EnsureRemaining(derived, t, DefaultTimeout()+10*time.Second)
 
-			require.Same(t, derived, refreshed, "the caller's own wrapping must not be discarded")
-			refreshedDeadline, ok := refreshed.Deadline()
+			require.Same(t, derived, got, "the caller's own wrapping must not be discarded")
+			deadline, ok := got.Deadline()
 			require.True(t, ok)
-			require.Equal(t, start.Add(time.Second), refreshedDeadline, "the caller's tighter deadline still governs")
-
-			// The underlying test context remains the same stable context.
-			extendedDeadline, ok := For(t).Deadline()
-			require.True(t, ok)
-			require.Equal(t, start.Add(maxTimeout), extendedDeadline)
-			require.Same(t, ctx, For(t))
+			require.Equal(t, start.Add(time.Second), deadline, "the caller's tighter deadline still governs")
 		})
 	})
 
@@ -376,25 +334,23 @@ func TestEnsureRemaining(t *testing.T) {
 		// tb, so this must extend the owning (here, parent) state rather
 		// than failing or silently no-op'ing.
 		synctest.Test(t, func(t *testing.T) {
-			start := time.Now()
 			other := For(t)
 
 			tb := newRecordingTB()
-			var refreshed context.Context
+			var got context.Context
 			tb.run(func() {
 				For(tb) // tb has its own, unrelated state too
 
-				refreshed = EnsureRemaining(other, tb, DefaultTimeout()+10*time.Second)
+				got = EnsureRemaining(other, tb, DefaultTimeout()+10*time.Second)
 			})
 
 			require.Empty(t, tb.fatal())
-			require.Same(t, other, refreshed)
-			refreshedDeadline, ok := refreshed.Deadline()
-			require.True(t, ok)
-			require.Equal(t, start.Add(maxTimeout), refreshedDeadline)
+			require.Same(t, other, got)
+			time.Sleep(DefaultTimeout() + time.Second) //nolint:forbidigo // advance past the original active expiration
+			require.NoError(t, other.Err())
 
 			// The extension is visible to the owning test too.
-			require.Same(t, refreshed, For(t))
+			require.Same(t, got, For(t))
 		})
 	})
 
