@@ -470,9 +470,6 @@ func (e *TestEnv) Tv() *testvars.TestVars {
 //	ctx, cancel := context.WithTimeout(env.Context(), 10*time.Second)
 //	defer cancel()
 //
-// The cached context has a stable identity; [testcontext.EnsureRemaining]
-// extends its active timeout in place.
-//
 // Deprecated: use the suite's Context() method instead.
 func (e *TestEnv) Context() context.Context {
 	return e.ctx
