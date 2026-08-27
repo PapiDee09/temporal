@@ -133,30 +133,6 @@ func TestRequire_PropagatesParentContextValues(t *testing.T) {
 	require.Equal(t, "value", got)
 }
 
-func TestRequire_SetsAttemptContextDeadline(t *testing.T) {
-	t.Parallel()
-
-	longCtx := testcontext.For(t)
-	longDeadline, ok := longCtx.Deadline()
-	require.True(t, ok)
-
-	attemptTimeout := 10 * time.Second * debug.TimeoutMultiplier
-
-	var attemptCtx context.Context
-	await.Require(longCtx, t, func(t *await.T) {
-		attemptCtx = t.Context()
-	}, time.Nanosecond, time.Hour)
-
-	require.NotNil(t, attemptCtx)
-	require.NotSame(t, longCtx, attemptCtx)
-
-	attemptDeadline, ok := attemptCtx.Deadline()
-	require.True(t, ok)
-	require.True(t, attemptDeadline.Before(longDeadline))
-	require.LessOrEqual(t, time.Until(attemptDeadline), attemptTimeout)
-	require.Greater(t, time.Until(attemptDeadline), attemptTimeout-200*time.Millisecond)
-}
-
 func TestRequire_PollIntervalStartsAfterAttemptFinishes(t *testing.T) {
 	t.Parallel()
 

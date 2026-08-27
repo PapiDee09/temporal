@@ -1,6 +1,7 @@
 package await
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -8,11 +9,25 @@ import (
 	"go.temporal.io/server/common/debug"
 )
 
-func TestConfig_OverrideAttemptTimeout(t *testing.T) {
+func TestRequire_SetsConfiguredAttemptContextDeadline(t *testing.T) {
 	t.Setenv(attemptTimeoutEnvVar, "250ms")
 
-	cfg := newConfig("")
-	require.Equal(t, 250*time.Millisecond*debug.TimeoutMultiplier, cfg.attemptTimeout)
+	attemptTimeout := 250 * time.Millisecond * debug.TimeoutMultiplier
+	parentCtx, cancel := context.WithTimeout(t.Context(), attemptTimeout+time.Second)
+	defer cancel()
+
+	var attemptCtx context.Context
+	Require(parentCtx, t, func(t *T) {
+		attemptCtx = t.Context()
+	}, time.Nanosecond, time.Hour)
+
+	require.NotNil(t, attemptCtx)
+	require.NotSame(t, parentCtx, attemptCtx)
+
+	attemptDeadline, ok := attemptCtx.Deadline()
+	require.True(t, ok)
+	require.LessOrEqual(t, time.Until(attemptDeadline), attemptTimeout)
+	require.Greater(t, time.Until(attemptDeadline), attemptTimeout-100*time.Millisecond)
 }
 
 func TestConfig_OverrideTotalTimeout(t *testing.T) {
@@ -20,6 +35,13 @@ func TestConfig_OverrideTotalTimeout(t *testing.T) {
 
 	cfg := newConfig("")
 	require.Equal(t, 250*time.Millisecond*debug.TimeoutMultiplier, cfg.totalTimeout)
+}
+
+func TestConfig_DefaultTotalTimeout(t *testing.T) {
+	t.Setenv(totalTimeoutEnvVar, "")
+
+	cfg := newConfig("")
+	require.Equal(t, 90*time.Second*debug.TimeoutMultiplier, cfg.totalTimeout)
 }
 
 func TestConfig_NextPollIntervalCapsAtMaximum(t *testing.T) {

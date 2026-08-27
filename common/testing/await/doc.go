@@ -5,7 +5,7 @@
 // their formatted variants. By default, they enforce a 10s timeout for each
 // await attempt.
 //
-// Polling uses an internal total timeout of 30s (or TEMPORAL_TEST_TIMEOUT) and
+// Polling uses an internal total timeout of 90s (or TEMPORAL_TEST_TIMEOUT) and
 // exponential intervals from 500ms to 2s. The timeout and poll interval
 // arguments on polling functions remain for source compatibility and are
 // ignored. Parent context and test deadlines still cap the internal timeout.

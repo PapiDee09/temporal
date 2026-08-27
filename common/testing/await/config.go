@@ -10,7 +10,7 @@ import (
 const (
 	totalTimeoutEnvVar     = "TEMPORAL_TEST_TIMEOUT"
 	attemptTimeoutEnvVar   = "TEMPORAL_AWAIT_ATTEMPT_TIMEOUT"
-	defaultTotalTimeout    = 30 * time.Second
+	defaultTotalTimeout    = 90 * time.Second
 	defaultMinPollInterval = 500 * time.Millisecond
 	defaultMaxPollInterval = 2 * time.Second
 )

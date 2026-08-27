@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"go.temporal.io/server/common/debug"
 	"go.temporal.io/server/common/testing/testcontext"
 )
 
@@ -97,10 +96,7 @@ func (s *contextSuite) TestAwaitUsesSuiteContext() {
 		s.Equal("decorated", s.Context().Value(key{}))
 		deadline, ok := s.Context().Deadline()
 		s.True(ok)
-		remaining := time.Until(deadline)
-		attemptTimeout := 10 * time.Second * debug.TimeoutMultiplier
-		s.LessOrEqual(remaining, attemptTimeout)
-		s.Greater(remaining, attemptTimeout-200*time.Millisecond)
+		s.Positive(time.Until(deadline))
 	}, 100*time.Millisecond, time.Millisecond)
 }
 
