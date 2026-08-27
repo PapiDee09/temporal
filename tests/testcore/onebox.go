@@ -33,7 +33,7 @@ import (
 	"go.temporal.io/server/common/rpc/auth"
 	"go.temporal.io/server/common/rpc/encryption"
 	"go.temporal.io/server/common/testing/testhooks"
-	"go.temporal.io/server/components/nexusoperations"
+	"go.temporal.io/server/service/history/hsm/nexusoperations"
 	"go.temporal.io/server/temporal"
 	"go.temporal.io/server/tests/testutils"
 	"go.uber.org/multierr"
