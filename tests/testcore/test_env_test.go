@@ -3,8 +3,14 @@ package testcore
 import (
 	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
 
+	"github.com/stretchr/testify/require"
+	"go.temporal.io/server/common/headers"
 	"go.temporal.io/server/common/testing/parallelsuite"
+	"go.temporal.io/server/common/testing/testcontext"
+	"google.golang.org/grpc/metadata"
 )
 
 type TestEnvSuite struct {
@@ -13,6 +19,29 @@ type TestEnvSuite struct {
 
 func TestTestEnvSuite(t *testing.T) {
 	parallelsuite.Run(t, &TestEnvSuite{})
+}
+
+func TestTestEnvContextCachesFinalDecoratedContext(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		earlyCtx := testcontext.For(t)
+		ctx := finalizeTestContext(t)
+		env := &TestEnv{ctx: ctx}
+
+		first := env.Context()
+		second := env.Context()
+		require.Same(t, ctx, first)
+		require.Same(t, first, second)
+		require.NotSame(t, earlyCtx, first)
+		md, ok := metadata.FromOutgoingContext(first)
+		require.True(t, ok)
+		require.Equal(t, []string{headers.ServerVersion}, md.Get(headers.ClientVersionHeaderName))
+
+		testcontext.EnsureRemaining(env.Context(), t, testcontext.DefaultTimeout()+10*time.Second)
+		time.Sleep(testcontext.DefaultTimeout() + time.Second) //nolint:forbidigo // advance past the original active expiration
+		require.NoError(t, env.Context().Err())
+	})
 }
 
 func (s *TestEnvSuite) TestDedicatedClusterGuard_NoErrorWithoutExplicitRequest() {

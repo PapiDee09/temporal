@@ -30,7 +30,7 @@ import (
 
 type saaDriver struct {
 	env              *testcore.TestEnv
-	t                *testing.T
+	ctx              context.Context
 	cfg              activityConfig
 	numStarted       int
 	activityIDPrefix string
@@ -40,16 +40,14 @@ type saaDriver struct {
 func newSAADriver(t *testing.T, env *testcore.TestEnv, cfg activityConfig) *saaDriver {
 	return &saaDriver{
 		env:              env,
-		t:                t,
+		ctx:              testcontext.For(t),
 		cfg:              cfg,
 		activityIDPrefix: t.Name(),
 	}
 }
 
-// testContext returns the driver's current test context, deliberately not cached;
-// see [testcontext.EnsureRemaining].
 func (d *saaDriver) testContext() context.Context {
-	return testcontext.For(d.t)
+	return d.ctx
 }
 
 // saaHandle is a handle to an activity instance.

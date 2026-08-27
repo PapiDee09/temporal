@@ -25,7 +25,7 @@ func TestWithTimeout(t *testing.T) {
 			ctx := For(t)
 			deadline, ok := ctx.Deadline()
 			require.True(t, ok)
-			require.Equal(t, start.Add(DefaultTimeout()), deadline)
+			require.Equal(t, start.Add(maxTimeout), deadline)
 			require.Equal(t, 90*time.Second, DefaultTimeout())
 		})
 	})
@@ -143,6 +143,19 @@ func TestCleanupCancelsContext(t *testing.T) {
 func TestCleanup(t *testing.T) {
 	t.Parallel()
 
+	t.Run("reports default timeout", func(t *testing.T) {
+		t.Parallel()
+
+		synctest.Test(t, func(t *testing.T) {
+			tb := newRecordingTB()
+			tb.run(func() {
+				<-For(tb).Done()
+			})
+
+			require.Equal(t, fmt.Sprintf("test exceeded timeout of %v", DefaultTimeout()), tb.error())
+		})
+	})
+
 	t.Run("reports timeout", func(t *testing.T) {
 		t.Parallel()
 
@@ -153,6 +166,23 @@ func TestCleanup(t *testing.T) {
 			tb.run(func() {
 				ctx := For(tb, WithTimeout(time.Millisecond))
 				<-ctx.Done() // let the deadline pass
+			})
+
+			require.Equal(t, fmt.Sprintf("test exceeded timeout of %v", timeout), tb.error())
+		})
+	})
+
+	t.Run("reports extended effective timeout", func(t *testing.T) {
+		t.Parallel()
+
+		synctest.Test(t, func(t *testing.T) {
+			timeout := DefaultTimeout() + 10*time.Second
+
+			tb := newRecordingTB()
+			tb.run(func() {
+				ctx := For(tb)
+				EnsureRemaining(ctx, tb, timeout)
+				<-ctx.Done()
 			})
 
 			require.Equal(t, fmt.Sprintf("test exceeded timeout of %v", timeout), tb.error())
@@ -169,7 +199,7 @@ func TestEnvTimeout(t *testing.T) {
 			ctx := For(t)
 			deadline, ok := ctx.Deadline()
 			require.True(t, ok)
-			require.Equal(t, start.Add(10*time.Second), deadline)
+			require.Equal(t, start.Add(maxTimeout), deadline)
 		})
 	})
 
@@ -185,6 +215,19 @@ func TestEnvTimeout(t *testing.T) {
 		})
 	})
 
+	t.Run("environment timeout remains the active expiration", func(t *testing.T) {
+		t.Setenv("TEMPORAL_TEST_TIMEOUT", "10s")
+
+		synctest.Test(t, func(t *testing.T) {
+			tb := newRecordingTB()
+			tb.run(func() {
+				<-For(tb).Done()
+			})
+
+			require.Equal(t, "test exceeded timeout of 10s", tb.error())
+		})
+	})
+
 	t.Run("remains extendable, unlike an explicit WithTimeout", func(t *testing.T) {
 		t.Setenv("TEMPORAL_TEST_TIMEOUT", "10s")
 
@@ -193,7 +236,7 @@ func TestEnvTimeout(t *testing.T) {
 			ctx := For(t)
 			originalDeadline, ok := ctx.Deadline()
 			require.True(t, ok)
-			require.Equal(t, start.Add(10*time.Second), originalDeadline)
+			require.Equal(t, start.Add(maxTimeout), originalDeadline)
 
 			// TEMPORAL_TEST_TIMEOUT only raises the baseline; it must not pin
 			// a hard ceiling the way WithTimeout does.
@@ -201,7 +244,8 @@ func TestEnvTimeout(t *testing.T) {
 
 			refreshedDeadline, ok := refreshed.Deadline()
 			require.True(t, ok)
-			require.Equal(t, start.Add(time.Minute), refreshedDeadline)
+			require.Equal(t, originalDeadline, refreshedDeadline)
+			require.Same(t, ctx, refreshed)
 		})
 	})
 }
@@ -217,13 +261,17 @@ func TestEnsureRemaining(t *testing.T) {
 			ctx := For(t)
 			originalDeadline, ok := ctx.Deadline()
 			require.True(t, ok)
-			require.Equal(t, start.Add(DefaultTimeout()), originalDeadline)
+			require.Equal(t, start.Add(maxTimeout), originalDeadline)
 
 			refreshed := EnsureRemaining(ctx, t, DefaultTimeout()+10*time.Second)
 
 			refreshedDeadline, ok := refreshed.Deadline()
 			require.True(t, ok)
-			require.Equal(t, start.Add(DefaultTimeout()+10*time.Second), refreshedDeadline)
+			require.Equal(t, originalDeadline, refreshedDeadline)
+			require.Same(t, ctx, refreshed)
+
+			time.Sleep(DefaultTimeout() + time.Second) //nolint:forbidigo // advance past the original active expiration
+			require.NoError(t, ctx.Err())
 		})
 	})
 
@@ -232,16 +280,23 @@ func TestEnsureRemaining(t *testing.T) {
 
 		synctest.Test(t, func(t *testing.T) {
 			start := time.Now()
-			ctx := For(t)
-			originalDeadline, ok := ctx.Deadline()
-			require.True(t, ok)
-			require.Equal(t, start.Add(DefaultTimeout()), originalDeadline)
+			tb := newRecordingTB()
+			tb.run(func() {
+				ctx := For(tb)
+				originalDeadline, ok := ctx.Deadline()
+				require.True(t, ok)
+				require.Equal(t, start.Add(maxTimeout), originalDeadline)
 
-			refreshed := EnsureRemaining(ctx, t, 10*time.Minute)
+				refreshed := EnsureRemaining(ctx, tb, 10*time.Minute)
 
-			refreshedDeadline, ok := refreshed.Deadline()
-			require.True(t, ok)
-			require.Equal(t, start.Add(maxTimeout), refreshedDeadline)
+				refreshedDeadline, ok := refreshed.Deadline()
+				require.True(t, ok)
+				require.Equal(t, start.Add(maxTimeout), refreshedDeadline)
+				require.Same(t, ctx, refreshed)
+				<-ctx.Done()
+			})
+
+			require.Equal(t, fmt.Sprintf("test exceeded timeout of %v", maxTimeout), tb.error())
 		})
 	})
 
@@ -270,8 +325,6 @@ func TestEnsureRemaining(t *testing.T) {
 
 			// The caller wrapped the test context with its own, tighter
 			// deadline (e.g. context.WithTimeout(env.Context(), ...)).
-			// Swapping it for the extended test context would silently
-			// discard that wrapping, so it must come back unchanged.
 			derived, cancel := context.WithTimeout(ctx, time.Second)
 			defer cancel()
 
@@ -282,19 +335,22 @@ func TestEnsureRemaining(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, start.Add(time.Second), refreshedDeadline, "the caller's tighter deadline still governs")
 
-			// The underlying test context is still extended for later callers.
+			// The underlying test context remains the same stable context.
 			extendedDeadline, ok := For(t).Deadline()
 			require.True(t, ok)
-			require.Equal(t, start.Add(DefaultTimeout()+10*time.Second), extendedDeadline)
+			require.Equal(t, start.Add(maxTimeout), extendedDeadline)
+			require.Same(t, ctx, For(t))
 		})
 	})
 
-	t.Run("replays decorators", func(t *testing.T) {
+	t.Run("preserves decorators without replay", func(t *testing.T) {
 		t.Parallel()
 
 		type key struct{}
+		var calls atomic.Int32
 
 		AttachDecorator(t, key{}, func(ctx context.Context) context.Context {
+			calls.Add(1)
 			return context.WithValue(ctx, key{}, "decorated")
 		})
 		ctx := For(t)
@@ -302,8 +358,9 @@ func TestEnsureRemaining(t *testing.T) {
 
 		refreshed := EnsureRemaining(ctx, t, DefaultTimeout()+10*time.Second)
 
-		require.NotSame(t, ctx, refreshed, "context should have been replaced")
+		require.Same(t, ctx, refreshed)
 		require.Equal(t, "decorated", refreshed.Value(key{}))
+		require.Equal(t, int32(1), calls.Load())
 	})
 
 	t.Run("preserves test name metadata", func(t *testing.T) {
@@ -312,28 +369,26 @@ func TestEnsureRemaining(t *testing.T) {
 		ctx := For(t)
 		refreshed := EnsureRemaining(ctx, t, DefaultTimeout()+10*time.Second)
 
-		require.NotSame(t, ctx, refreshed, "context should have been replaced")
+		require.Same(t, ctx, refreshed)
 		md, ok := metadata.FromOutgoingContext(refreshed)
 		require.True(t, ok)
 		require.Equal(t, []string{t.Name()}, md.Get(testNameMetadataKey))
 	})
 
-	t.Run("recognizes older context after repeated extensions", func(t *testing.T) {
+	t.Run("repeated extensions keep the same context alive", func(t *testing.T) {
 		t.Parallel()
 
 		synctest.Test(t, func(t *testing.T) {
 			original := For(t)
 
 			firstRefresh := EnsureRemaining(original, t, DefaultTimeout()+10*time.Second)
-			firstDeadline, ok := firstRefresh.Deadline()
-			require.True(t, ok)
-			require.Equal(t, time.Now().Add(DefaultTimeout()+10*time.Second), firstDeadline)
+			require.Same(t, original, firstRefresh)
 
-			// The original context is outdated by now, but still recognized.
 			refreshed := EnsureRemaining(original, t, DefaultTimeout()+20*time.Second)
-			refreshedDeadline, ok := refreshed.Deadline()
-			require.True(t, ok)
-			require.Equal(t, time.Now().Add(DefaultTimeout()+20*time.Second), refreshedDeadline)
+			require.Same(t, original, refreshed)
+
+			time.Sleep(DefaultTimeout() + 11*time.Second) //nolint:forbidigo // pass the first extension, but not the second
+			require.NoError(t, original.Err())
 		})
 	})
 
@@ -395,9 +450,10 @@ func TestEnsureRemaining(t *testing.T) {
 			})
 
 			require.Empty(t, tb.fatal())
+			require.Same(t, other, refreshed)
 			refreshedDeadline, ok := refreshed.Deadline()
 			require.True(t, ok)
-			require.Equal(t, start.Add(DefaultTimeout()+10*time.Second), refreshedDeadline)
+			require.Equal(t, start.Add(maxTimeout), refreshedDeadline)
 
 			// The extension is visible to the owning test too.
 			require.Same(t, refreshed, For(t))
@@ -420,6 +476,17 @@ func TestEnsureRemaining(t *testing.T) {
 		)
 	})
 
+	t.Run("fails for nil context", func(t *testing.T) {
+		t.Parallel()
+
+		tb := newRecordingTB()
+		tb.run(func() {
+			EnsureRemaining(nil, tb, time.Second) //nolint:staticcheck // verify the package's nil-context failure
+		})
+
+		require.Equal(t, "testcontext: nil context", tb.fatal())
+	})
+
 	t.Run("safe concurrent calls", func(t *testing.T) {
 		t.Parallel()
 
@@ -436,11 +503,12 @@ func TestEnsureRemaining(t *testing.T) {
 			}
 			wg.Wait()
 
-			// All callers observe the extended deadline, no matter who extended it.
+			// All callers receive the cached context, no matter who extends it.
 			for _, got := range refreshed {
+				require.Same(t, ctx, got)
 				deadline, ok := got.Deadline()
 				require.True(t, ok)
-				require.Equal(t, start.Add(DefaultTimeout()+10*time.Second), deadline)
+				require.Equal(t, start.Add(maxTimeout), deadline)
 			}
 		})
 	})

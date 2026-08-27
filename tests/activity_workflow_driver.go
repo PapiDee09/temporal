@@ -35,20 +35,18 @@ import (
 
 type wfaDriver struct {
 	env *testcore.TestEnv
-	t   *testing.T
+	ctx context.Context
 	cfg activityConfig
 }
 
 // newWFADriver builds a driver. cfg.StartDelay is ignored: a workflow activity has no per-activity
 // start delay.
 func newWFADriver(t *testing.T, env *testcore.TestEnv, cfg activityConfig) *wfaDriver {
-	return &wfaDriver{env: env, t: t, cfg: cfg}
+	return &wfaDriver{env: env, ctx: testcontext.For(t), cfg: cfg}
 }
 
-// testContext returns the driver's current test context, deliberately not cached;
-// see [testcontext.EnsureRemaining].
 func (d *wfaDriver) testContext() context.Context {
-	return testcontext.For(d.t)
+	return d.ctx
 }
 
 // wfaHandle is a handle to a workflow-scheduled activity.

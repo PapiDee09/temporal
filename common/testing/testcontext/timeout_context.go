@@ -1,0 +1,115 @@
+package testcontext
+
+import (
+	"context"
+	"sync"
+	"time"
+)
+
+type timeoutContext struct {
+	parent  context.Context
+	ceiling time.Time
+	done    chan struct{}
+
+	mu                 sync.Mutex
+	activeExpiration   time.Time
+	timer              *time.Timer
+	stopParentCallback func() bool
+	err                error
+}
+
+func newTimeoutContext(parent context.Context, ceiling, activeExpiration time.Time) *timeoutContext {
+	if ceiling.Before(activeExpiration) {
+		activeExpiration = ceiling
+	}
+	ctx := &timeoutContext{
+		parent:           context.WithoutCancel(parent),
+		ceiling:          ceiling,
+		done:             make(chan struct{}),
+		activeExpiration: activeExpiration,
+	}
+
+	ctx.mu.Lock()
+	ctx.timer = time.AfterFunc(time.Until(activeExpiration), ctx.expire)
+	ctx.stopParentCallback = context.AfterFunc(parent, func() {
+		ctx.cancel()
+	})
+	ctx.mu.Unlock()
+	return ctx
+}
+
+func (c *timeoutContext) Deadline() (time.Time, bool) {
+	return c.ceiling, true
+}
+
+func (c *timeoutContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *timeoutContext) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+func (c *timeoutContext) Value(key any) any {
+	return c.parent.Value(key)
+}
+
+func (c *timeoutContext) extend(expiration time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.err != nil {
+		return false
+	}
+	if c.ceiling.Before(expiration) {
+		expiration = c.ceiling
+	}
+	if !expiration.After(c.activeExpiration) {
+		return true
+	}
+
+	c.activeExpiration = expiration
+	c.timer.Reset(time.Until(expiration))
+	return true
+}
+
+func (c *timeoutContext) effectiveExpiration() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.activeExpiration
+}
+
+func (c *timeoutContext) cancel() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.finishLocked(context.Canceled)
+}
+
+func (c *timeoutContext) expire() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.err != nil {
+		return
+	}
+	// Reset may race a callback that already started. Re-check the active
+	// expiration so that stale callbacks cannot cancel an extended context.
+	if remaining := time.Until(c.activeExpiration); remaining > 0 {
+		c.timer.Reset(remaining)
+		return
+	}
+	c.finishLocked(context.DeadlineExceeded)
+}
+
+func (c *timeoutContext) finishLocked(err error) {
+	if c.err != nil {
+		return
+	}
+	c.err = err
+	close(c.done)
+	c.timer.Stop()
+	c.stopParentCallback()
+}
