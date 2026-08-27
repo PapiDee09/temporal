@@ -44,20 +44,22 @@ func hardDeadlockTimeout() time.Duration {
 const postAwaitTimeoutReserve = 10 * time.Second
 
 // Require polls condition until it returns without assertion failures, or
-// until ctx is canceled or timeout expires (whichever is earliest).
+// until ctx is canceled or the internal timeout expires (whichever is earliest).
 //
 // Pass the *await.T to require.*/assert.* — failures cause a retry, not a
 // test failure. Use t.Context() inside the callback to honor the timeout.
-func Require(ctx context.Context, tb testing.TB, condition func(*T), timeout, pollInterval time.Duration) {
+// The timeout and poll interval arguments are retained for source compatibility
+// and ignored.
+func Require(ctx context.Context, tb testing.TB, condition func(*T), _, _ time.Duration) {
 	tb.Helper()
-	run(ctx, tb, condition, legacyConfig(timeout, pollInterval, ""), "Require", requireMisuseHint, true)
+	run(ctx, tb, condition, newConfig(""), "Require", requireMisuseHint, true)
 }
 
 // Requiref is like [Require] but adds a formatted message to the timeout
-// failure.
-func Requiref(ctx context.Context, tb testing.TB, condition func(*T), timeout, pollInterval time.Duration, msg string, args ...any) {
+// failure. Its timeout and poll interval arguments are also ignored.
+func Requiref(ctx context.Context, tb testing.TB, condition func(*T), _, _ time.Duration, msg string, args ...any) {
 	tb.Helper()
-	run(ctx, tb, condition, legacyConfig(timeout, pollInterval, fmt.Sprintf(msg, args...)), "Requiref", requireMisuseHint, true)
+	run(ctx, tb, condition, newConfig(fmt.Sprintf(msg, args...)), "Requiref", requireMisuseHint, true)
 }
 
 func run(
@@ -169,8 +171,8 @@ func run(
 			return
 		}
 
-		// Wait for pollInterval, or context is canceled or deadline is reached.
-		sleep(awaitCtx, deadline, cfg.pollInterval)
+		// Wait for the next poll interval, or context is canceled or deadline is reached.
+		sleep(awaitCtx, deadline, cfg.nextPollInterval(report.attempts))
 	}
 }
 

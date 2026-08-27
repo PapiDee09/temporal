@@ -7,27 +7,38 @@ import (
 	"go.temporal.io/server/common/debug"
 )
 
-const attemptTimeoutEnvVar = "TEMPORAL_AWAIT_ATTEMPT_TIMEOUT"
+const (
+	totalTimeoutEnvVar     = "TEMPORAL_TEST_TIMEOUT"
+	attemptTimeoutEnvVar   = "TEMPORAL_AWAIT_ATTEMPT_TIMEOUT"
+	defaultTotalTimeout    = 30 * time.Second
+	defaultMinPollInterval = 500 * time.Millisecond
+	defaultMaxPollInterval = 2 * time.Second
+)
 
 type config struct {
-	totalTimeout   time.Duration
-	pollInterval   time.Duration
-	attemptTimeout time.Duration
-	timeoutMsg     string
+	totalTimeout    time.Duration
+	minPollInterval time.Duration
+	maxPollInterval time.Duration
+	attemptTimeout  time.Duration
+	timeoutMsg      string
 }
 
-func newConfig() config {
+func newConfig(timeoutMsg string) config {
 	return config{
-		attemptTimeout: envDuration(attemptTimeoutEnvVar, 10*time.Second) * debug.TimeoutMultiplier,
+		totalTimeout:    envDuration(totalTimeoutEnvVar, defaultTotalTimeout) * debug.TimeoutMultiplier,
+		minPollInterval: defaultMinPollInterval,
+		maxPollInterval: defaultMaxPollInterval,
+		attemptTimeout:  envDuration(attemptTimeoutEnvVar, 10*time.Second) * debug.TimeoutMultiplier,
+		timeoutMsg:      timeoutMsg,
 	}
 }
 
-func legacyConfig(timeout, pollInterval time.Duration, timeoutMsg string) config {
-	cfg := newConfig()
-	cfg.totalTimeout = timeout
-	cfg.pollInterval = pollInterval
-	cfg.timeoutMsg = timeoutMsg
-	return cfg
+func (c config) nextPollInterval(attempt int) time.Duration {
+	interval := c.minPollInterval
+	for range attempt - 1 {
+		interval = min(interval*2, c.maxPollInterval)
+	}
+	return interval
 }
 
 func envDuration(name string, fallback time.Duration) time.Duration {

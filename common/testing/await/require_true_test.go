@@ -1,6 +1,7 @@
 package await_test
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,6 +26,39 @@ func TestRequireTrue_ImmediateSuccess(t *testing.T) {
 	require.Equal(t, 1, attempts, "condition should be called exactly once")
 }
 
+func TestRequireTrue_IgnoresLegacyTimingArguments(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		run  func(*testing.T, func() bool)
+	}{
+		{
+			name: "RequireTrue",
+			run: func(t *testing.T, condition func() bool) {
+				await.RequireTrue(t, condition, time.Nanosecond, time.Hour)
+			},
+		},
+		{
+			name: "RequireTruef",
+			run: func(t *testing.T, condition func() bool) {
+				await.RequireTruef(t, condition, time.Nanosecond, time.Hour, "not ready")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var attempts atomic.Int32
+			tc.run(t, func() bool {
+				return attempts.Add(1) == 2
+			})
+
+			require.Equal(t, int32(2), attempts.Load())
+		})
+	}
+}
+
 func TestRequireTrue_RetriesFalseUntilTrue(t *testing.T) {
 	t.Parallel()
 
@@ -44,6 +78,9 @@ func TestRequireTrue_FailureScenarios(t *testing.T) {
 		t.Parallel()
 
 		tb := newRecordingTB()
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		tb.ctx = ctx
 		tb.run(func() {
 			await.RequireTrue(tb, func() bool {
 				return false
@@ -57,6 +94,9 @@ func TestRequireTrue_FailureScenarios(t *testing.T) {
 		t.Parallel()
 
 		tb := newRecordingTB()
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		tb.ctx = ctx
 		tb.run(func() {
 			await.RequireTruef(tb, func() bool {
 				return false
