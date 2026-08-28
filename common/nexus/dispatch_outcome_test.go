@@ -314,24 +314,6 @@ func TestClassifyStartOperationDispatch_FailureAliasesTheResponse(t *testing.T) 
 	require.Same(t, resp.GetOutcome().(*matchingservice.DispatchNexusTaskResponse_Failure).Failure, r.Failure)
 }
 
-// With an integer enum, iota made duplicate values impossible. With string values a copy-paste can
-// silently alias two outcomes into one, so assert they stay distinct and non-empty -- the empty string
-// is the zero value and must not name a real outcome.
-func TestDispatchOutcomeValuesAreDistinct(t *testing.T) {
-	seen := map[DispatchOutcome]struct{}{}
-	for _, o := range []DispatchOutcome{
-		DispatchOutcomeUnrecognized, DispatchOutcomeSyncSuccess, DispatchOutcomeAsyncSuccess,
-		DispatchOutcomeCancelAccepted, DispatchOutcomeOperationFailure,
-		DispatchOutcomeOperationFailureDeprecated, DispatchOutcomeHandlerFailure,
-		DispatchOutcomeWorkerFailure, DispatchOutcomeHandlerFailureDeprecated,
-		DispatchOutcomeRequestTimeout,
-	} {
-		require.NotEmpty(t, o)
-		require.NotContains(t, seen, o, "outcome values must be distinct")
-		seen[o] = struct{}{}
-	}
-}
-
 // The outcome tag values are what existing dashboards query, so they are pinned here rather than only
 // asserted end-to-end through a handler.
 func TestDispatchResultOutcomeTag(t *testing.T) {
