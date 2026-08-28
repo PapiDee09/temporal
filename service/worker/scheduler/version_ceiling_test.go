@@ -8,12 +8,26 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	schedulepb "go.temporal.io/api/schedule/v1"
+	"go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/workflow"
 	schedulespb "go.temporal.io/server/api/schedule/v1"
 	schedulerpb "go.temporal.io/server/chasm/lib/scheduler/gen/schedulerpb/v1"
 	"go.temporal.io/server/common/payloads"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
+
+type warningLogger struct {
+	warnings []string
+}
+
+var _ log.Logger = (*warningLogger)(nil)
+
+func (*warningLogger) Debug(string, ...any) {}
+func (*warningLogger) Info(string, ...any)  {}
+func (l *warningLogger) Warn(msg string, _ ...any) {
+	l.warnings = append(l.warnings, msg)
+}
+func (*warningLogger) Error(string, ...any) {}
 
 func TestDetermineVersionTransitions(t *testing.T) {
 	for _, tc := range []struct {
@@ -115,6 +129,36 @@ func TestDetermineVersionTransitions(t *testing.T) {
 			require.Equal(t, tc.wantCeiling, ceiling)
 		})
 	}
+}
+
+func TestDetermineVersionDiagnostics(t *testing.T) {
+	t.Run("deduplicates invalid override warnings", func(t *testing.T) {
+		logger := &warningLogger{}
+		s := &scheduler{
+			logger:          logger,
+			versionCeiling:  func() int { return -1 },
+			versionOverride: func() int { return int(LatestSchedulerWorkflowVersion) + 1 },
+		}
+
+		s.determineVersion(TriggerImmediatelyTimestamp)
+		s.determineVersion(TriggerImmediatelyTimestamp)
+
+		require.Equal(t, []string{"worker.schedulerV1VersionOverride is outside the supported range; ignored"}, logger.warnings)
+	})
+
+	t.Run("does not report a ceiling that caps an override as ineffective", func(t *testing.T) {
+		logger := &warningLogger{}
+		s := &scheduler{
+			logger:          logger,
+			versionCeiling:  func() int { return int(MigrationHandoffFixes) },
+			versionOverride: func() int { return int(LatestSchedulerWorkflowVersion) },
+		}
+
+		version, _ := s.determineVersion(TriggerImmediatelyTimestamp)
+
+		require.Equal(t, SchedulerWorkflowVersion(MigrationHandoffFixes), version)
+		require.Empty(t, logger.warnings)
+	})
 }
 
 // TestVersionCeilingDefersCHASMMigration verifies that a clamp below the CHASM gate keeps
