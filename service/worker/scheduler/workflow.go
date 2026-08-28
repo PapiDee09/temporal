@@ -78,6 +78,8 @@ const (
 	MigrationHandoffFixes = 13
 	// update the desired time for a buffered start when refresh discovers the prior action completed
 	RefreshCompletionDesiredTime = 14
+	// LatestSchedulerWorkflowVersion is the newest workflow behavior this binary can activate.
+	LatestSchedulerWorkflowVersion SchedulerWorkflowVersion = RefreshCompletionDesiredTime
 )
 
 const (
@@ -125,17 +127,14 @@ type (
 		// SpecBuilder is technically a non-deterministic dependency, but it's safe as
 		// long as we only call methods on cspec inside of SideEffect (or in a query
 		// without modifying state).
-		specBuilder *SpecBuilder
-		cspec       *CompiledSpec
-		// enableCHASMMigration and migrateWithRunningWorkflows are re-evaluated every iteration
-		// inside the "tweakables" MutableSideEffect.
+		specBuilder                 *SpecBuilder
+		cspec                       *CompiledSpec
 		enableCHASMMigration        func() bool
 		migrateWithRunningWorkflows func() bool
-		// versionCeiling is re-evaluated every iteration inside the "tweakables" MutableSideEffect.
-		// The version cannot decrease, but raising the ceiling can advance it on the next iteration.
-		versionCeiling        func() int
-		lastVersionCeiling    int
-		hasLastVersionCeiling bool
+		versionCeiling              func() int
+		versionOverride             func() int
+		lastVersionCeiling          int
+		hasLastVersionCeiling       bool
 
 		tweakables TweakablePolicies
 
@@ -245,18 +244,35 @@ var (
 	errUpdateConflict = errors.New("conflicting concurrent update")
 )
 
+type schedulerDynamicConfig struct {
+	enableCHASMMigration        func() bool
+	migrateWithRunningWorkflows func() bool
+	versionCeiling              func() int
+	versionOverride             func() int
+}
+
 func SchedulerWorkflow(ctx workflow.Context, args *schedulespb.StartScheduleArgs) error {
-	disabled := func() bool { return false }
 	dc := dynamicconfig.NewNoopCollection()
 	specBuilder := NewSpecBuilder(
 		dynamicconfig.SchedulerSpecWarnIterations.Get(dc),
 		dynamicconfig.SchedulerSpecMaxIterations.Get(dc),
 	)
-	noClamp := func() int { return -1 }
-	return schedulerWorkflowWithSpecBuilder(ctx, args, specBuilder, disabled, disabled, noClamp)
+	return schedulerWorkflowWithSpecBuilder(ctx, args, specBuilder, schedulerDynamicConfig{})
 }
 
-func schedulerWorkflowWithSpecBuilder(ctx workflow.Context, args *schedulespb.StartScheduleArgs, specBuilder *SpecBuilder, enableCHASMMigration func() bool, migrateWithRunningWorkflows func() bool, versionCeiling func() int) error {
+func schedulerWorkflowWithSpecBuilder(ctx workflow.Context, args *schedulespb.StartScheduleArgs, specBuilder *SpecBuilder, config schedulerDynamicConfig) error {
+	if config.enableCHASMMigration == nil {
+		config.enableCHASMMigration = func() bool { return false }
+	}
+	if config.migrateWithRunningWorkflows == nil {
+		config.migrateWithRunningWorkflows = func() bool { return false }
+	}
+	if config.versionCeiling == nil {
+		config.versionCeiling = func() int { return -1 }
+	}
+	if config.versionOverride == nil {
+		config.versionOverride = func() int { return -1 }
+	}
 	scheduler := &scheduler{
 		StartScheduleArgs: args,
 		ctx:               ctx,
@@ -267,9 +283,10 @@ func schedulerWorkflowWithSpecBuilder(ctx workflow.Context, args *schedulespb.St
 			metrics.ScheduleBackendTag: metrics.ScheduleBackendLegacy,
 		}),
 		specBuilder:                 specBuilder,
-		enableCHASMMigration:        enableCHASMMigration,
-		migrateWithRunningWorkflows: migrateWithRunningWorkflows,
-		versionCeiling:              versionCeiling,
+		enableCHASMMigration:        config.enableCHASMMigration,
+		migrateWithRunningWorkflows: config.migrateWithRunningWorkflows,
+		versionCeiling:              config.versionCeiling,
+		versionOverride:             config.versionOverride,
 	}
 	return scheduler.run()
 }
@@ -1871,11 +1888,16 @@ func (s *scheduler) determineVersion(defaultVersion SchedulerWorkflowVersion) (S
 		s.lastVersionCeiling = ceiling
 		s.hasLastVersionCeiling = true
 	}
-	return determineVersionTransition(defaultVersion, s.tweakables.Version, ceiling)
+	override := s.versionOverride()
+	if override > int(LatestSchedulerWorkflowVersion) {
+		s.logger.Warn("worker.schedulerV1VersionOverride above the latest supported version; ignored",
+			"override", override, "latestSupportedVersion", LatestSchedulerWorkflowVersion)
+	}
+	return determineVersionTransition(defaultVersion, s.tweakables.Version, ceiling, override)
 }
 
-func determineVersionTransition(defaultVersion, recordedVersion SchedulerWorkflowVersion, ceiling int) (SchedulerWorkflowVersion, int) {
-	return max(clampVersion(defaultVersion, ceiling), recordedVersion), ceiling
+func determineVersionTransition(defaultVersion, recordedVersion SchedulerWorkflowVersion, ceiling, override int) (SchedulerWorkflowVersion, int) {
+	return max(resolveVersion(defaultVersion, ceiling, override), recordedVersion), ceiling
 }
 
 // clampVersion lowers v to ceiling. A negative ceiling is unset (no clamp); a ceiling at or above
@@ -1893,11 +1915,16 @@ func panicIfErr(err error) {
 	}
 }
 
-func GetListInfoFromStartArgs(args *schedulespb.StartScheduleArgs, now time.Time, specBuilder *SpecBuilder, versionCeiling int) *schedulepb.ScheduleListInfo {
+type VersionSelection struct {
+	Ceiling  int
+	Override int
+}
+
+func GetListInfoFromStartArgs(args *schedulespb.StartScheduleArgs, now time.Time, specBuilder *SpecBuilder, selection VersionSelection) *schedulepb.ScheduleListInfo {
 	// Create a scheduler outside of workflow context with just the fields we need to call
 	// getListInfo. Note that this does not take into account InitialPatch.
 	tweakables := CurrentTweakablePolicies
-	tweakables.Version = clampVersion(tweakables.Version, versionCeiling)
+	tweakables.Version = resolveVersion(tweakables.Version, selection.Ceiling, selection.Override)
 	s := &scheduler{
 		StartScheduleArgs: args,
 		tweakables:        tweakables,
@@ -1907,6 +1934,13 @@ func GetListInfoFromStartArgs(args *schedulespb.StartScheduleArgs, now time.Time
 	s.compileSpec()
 	s.State.LastProcessedTime = timestamppb.New(now)
 	return s.getListInfo(false)
+}
+
+func resolveVersion(defaultVersion SchedulerWorkflowVersion, ceiling, override int) SchedulerWorkflowVersion {
+	if override >= int(defaultVersion) && override <= int(LatestSchedulerWorkflowVersion) {
+		defaultVersion = SchedulerWorkflowVersion(override)
+	}
+	return clampVersion(defaultVersion, ceiling)
 }
 
 func isUserScheduleError(err error) bool {
